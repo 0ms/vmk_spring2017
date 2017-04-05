@@ -1,10 +1,11 @@
 #include <Windows.h>
 #include <stdio.h>
 
-#define NON_EXECUTABLE_IMAGE "Non-executable image"
+#define NON_EXECUTABLE_IMAGE "Non-executable or corrupted image"
 #define NT_SIGNATURE_NOT_FOUND "NT_SIGNATURE not found"
 #define DOS_SIGNATURE_NOT_FOUND "DOS_SIGNATURE not found"
 #define BUFFER_OVERFLOW "Buffer overflow"
+#define INVALID_ENTRY_POINT "Invalid entry point"
 
 #define BUFFER_SIZE 0x1000
 #define CYRILLIC_CODE_PAGE 1251 
@@ -14,6 +15,10 @@ unsigned int ReadFileToBuffer( HANDLE fileHandle, char buffer[ BUFFER_SIZE ] );
 void PrintHelp( char* programName );
 void PrintError( char* functionFrom );
 void PrintErrorAdv(const char* functionFrom, const char* error);
+void PrintInfo(IMAGE_SECTION_HEADER* sec_header, int sectionIndex,
+  DWORD imageBase, DWORD entryPoint);
+int GetInfoFromNTHeader(char* headerBufOffset, IMAGE_NT_HEADERS* pe_header,
+    IMAGE_SECTION_HEADER** sec_header, DWORD* imageBase, DWORD* entryPoint);
 void ParseFile( char* buffer, int bufferSize );
 
 int main( int argc, char** argv )
@@ -82,6 +87,27 @@ unsigned int ReadFileToBuffer( HANDLE fileHandle, char buffer[ BUFFER_SIZE ] )
   return returnValue;
 }
 
+int GetInfoFromNTHeader(char* headerBufOffset, IMAGE_NT_HEADERS* pe_header,
+    IMAGE_SECTION_HEADER** sec_header, DWORD* imageBase, DWORD* entryPoint) {
+  if (IMAGE_NT_OPTIONAL_HDR32_MAGIC == pe_header->OptionalHeader.Magic) {
+    IMAGE_NT_HEADERS32* pe_header = (IMAGE_NT_HEADERS32*)headerBufOffset;
+    IMAGE_OPTIONAL_HEADER32* opt_header = &pe_header->OptionalHeader;
+    *sec_header = IMAGE_FIRST_SECTION(pe_header);
+    *imageBase = opt_header->ImageBase;
+    *entryPoint = opt_header->AddressOfEntryPoint;
+  } else if (IMAGE_NT_OPTIONAL_HDR64_MAGIC == pe_header->OptionalHeader.Magic) {
+    IMAGE_NT_HEADERS64* pe_header = (IMAGE_NT_HEADERS64*)headerBufOffset;
+    IMAGE_OPTIONAL_HEADER64* opt_header = &pe_header->OptionalHeader;
+    *sec_header = IMAGE_FIRST_SECTION(pe_header);
+    *imageBase = opt_header->ImageBase;
+    *entryPoint = opt_header->AddressOfEntryPoint;
+  } else {
+    PrintErrorAdv(__func__, NON_EXECUTABLE_IMAGE);
+    return -1;
+  }
+  return 0;
+}
+
 void ParseFile( char* buffer, int bufferSize )
 {
   // TODO: Необходимо выполнить разбор файла и написать в какой секции располагается точка входа. 
@@ -104,57 +130,39 @@ void ParseFile( char* buffer, int bufferSize )
   // Не забывайте проверять такие поля как сигнатуры файлов (ведь надо убедиться, что разбираем собственно исполняемый файл)
   //printf( "Buffer length: %d\nImplement parsing of file\n", bufferSize );
   IMAGE_DOS_HEADER* dos_header = (IMAGE_DOS_HEADER*)buffer;
-  if (dos_header->e_magic == IMAGE_DOS_SIGNATURE) {
+  if (IMAGE_DOS_SIGNATURE == dos_header->e_magic) {
     IMAGE_NT_HEADERS* pe_header
       = (IMAGE_NT_HEADERS*)(buffer + dos_header->e_lfanew);
-    if (pe_header->Signature == IMAGE_NT_SIGNATURE) {
+    if (IMAGE_NT_SIGNATURE == pe_header->Signature) {
       IMAGE_FILE_HEADER* file_header = &pe_header->FileHeader;
       WORD numberOfSections = file_header->NumberOfSections;
-      DWORD imageBase, entryPoint, sectionOffset;
-      if (pe_header->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
-        IMAGE_NT_HEADERS32* pe_header
-          = (IMAGE_NT_HEADERS32*)(buffer + dos_header->e_lfanew);
-        IMAGE_OPTIONAL_HEADER32* opt_header = &pe_header->OptionalHeader;
-        sectionOffset = dos_header->e_lfanew + sizeof(*pe_header);
-        imageBase = opt_header->ImageBase;
-        entryPoint = opt_header->AddressOfEntryPoint;
-      } else if (pe_header->OptionalHeader.Magic
-        == IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
-        IMAGE_NT_HEADERS64* pe_header
-          = (IMAGE_NT_HEADERS64*)(buffer + dos_header->e_lfanew);
-        IMAGE_OPTIONAL_HEADER64* opt_header = &pe_header->OptionalHeader;
-        sectionOffset = dos_header->e_lfanew + sizeof(*pe_header);
-        imageBase = opt_header->ImageBase;
-        entryPoint = opt_header->AddressOfEntryPoint;
-      }
-      if (pe_header->OptionalHeader.Magic != IMAGE_ROM_OPTIONAL_HDR_MAGIC) {
-        int i;
-        char* sectionsBase = buffer + sectionOffset;
-        for (i = 0; i < numberOfSections; ++i) {
-          IMAGE_SECTION_HEADER* sec_header
-            = (IMAGE_SECTION_HEADER*)(sectionsBase + i * sizeof(*sec_header));
-          if (sectionOffset + (i + 1) * sizeof(*sec_header) > bufferSize) {
-            PrintErrorAdv(__func__, BUFFER_OVERFLOW);
-            break;
+      IMAGE_SECTION_HEADER* sec_header = NULL;
+      DWORD imageBase, entryPoint;
+      if (NO_ERROR == GetInfoFromNTHeader(
+        buffer + dos_header->e_lfanew, pe_header, &sec_header, &imageBase,
+        &entryPoint)) {
+        DWORD sectionsOffset = dos_header->e_lfanew
+          + FIELD_OFFSET(IMAGE_NT_HEADERS, OptionalHeader)
+          + file_header->SizeOfOptionalHeader;
+        if (sectionsOffset + sizeof(*sec_header) * numberOfSections
+          <= bufferSize) {
+          WORD i;
+          int success = 0;
+          for (i = 0; i < numberOfSections; ++i, ++sec_header) {
+            if (sec_header->VirtualAddress <= entryPoint
+              && entryPoint < sec_header->VirtualAddress
+              + sec_header->Misc.VirtualSize) {
+              PrintInfo(sec_header, i, imageBase, entryPoint);
+              success = 1;
+              break;
+            }
           }
-          DWORD sectionRVA = sec_header->VirtualAddress;
-          DWORD sectionSize
-            = min(sec_header->SizeOfRawData, sec_header->Misc.VirtualSize);
-          DWORD sectionSizeTmp = sec_header->Misc.VirtualSize;
-          sec_header->Misc.VirtualSize = 0;
-          if (sectionRVA <= entryPoint
-            && entryPoint < sectionRVA + sectionSize) {
-            printf("Entry point (0x%X)\nIn section %d, %s\n\
-Offset in section 0x%X, %d %%\n", imageBase + entryPoint, i, sec_header->Name,
-              entryPoint - sectionRVA,
-              ((entryPoint - sectionRVA) * 100) / sectionSize);
-            sec_header->Misc.VirtualSize = sectionSizeTmp;
-            break;
+          if (!success) {
+            PrintErrorAdv(__func__, INVALID_ENTRY_POINT);
           }
-          sec_header->Misc.VirtualSize = sectionSizeTmp;
+        } else {
+          PrintErrorAdv(__func__, BUFFER_OVERFLOW);
         }
-      } else {
-        PrintErrorAdv(__func__, NON_EXECUTABLE_IMAGE);
       }
     } else {
       PrintErrorAdv(__func__, NT_SIGNATURE_NOT_FOUND);
@@ -191,6 +199,18 @@ void PrintError( char* functionFrom )
 void PrintErrorAdv(const char* functionFrom, const char* error) {
   printf("%s: %s\n", functionFrom, error);
   return;
+}
+
+void PrintInfo(IMAGE_SECTION_HEADER* sec_header, int sectionIndex,
+    DWORD imageBase, DWORD entryPoint) {
+  char sectionName[IMAGE_SIZEOF_SHORT_NAME + 1];
+  sectionName[IMAGE_SIZEOF_SHORT_NAME] = '\0';
+  memcpy(sectionName, sec_header->Name, IMAGE_SIZEOF_SHORT_NAME);
+  printf("Entry point (0x%X)\nIn section %d, %s\n\
+Offset in section 0x%X, %d %%\n", imageBase + entryPoint, sectionIndex,
+    sectionName, entryPoint - sec_header->VirtualAddress,
+    ((entryPoint - sec_header->VirtualAddress) * 100)
+    / sec_header->Misc.VirtualSize);
 }
 
 #pragma endregion
