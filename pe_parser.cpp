@@ -7,6 +7,7 @@
 #define BUFFER_OVERFLOW "Buffer overflow"
 #define INVALID_ENTRY_POINT "Invalid entry point"
 #define INVALID_DOS_HEADER "Invalid DOS header"
+#define UNUSUAL_ENTRY_POINT_LOCATION "Unusual entry point location"
 
 #define BUFFER_SIZE 0x1000
 #define CYRILLIC_CODE_PAGE 1251 
@@ -164,8 +165,12 @@ void ParseFile( char* buffer, int bufferSize )
               if (sec_header->VirtualAddress <= entryPoint
                 && entryPoint < sec_header->VirtualAddress
                 + sec_header->Misc.VirtualSize) {
-                PrintInfo(sec_header, i, imageBase, entryPoint);
-                success = 1;
+                if (sec_header->SizeOfRawData > 0) {
+                  PrintInfo(sec_header, i, imageBase, entryPoint);
+                  success = 1;
+                } else {
+                  PrintErrorAdv(__func__, UNUSUAL_ENTRY_POINT_LOCATION);
+                }
                 break;
               }
             }
