@@ -9,6 +9,12 @@
 #define INVALID_DOS_HEADER "Invalid DOS header"
 #define UNUSUAL_ENTRY_POINT_LOCATION "Unusual entry point location"
 
+struct OPT_HEADER_INFO {
+  IMAGE_SECTION_HEADER* sec_header;
+  DWORD imageBase;
+  DWORD entryPoint;
+};
+
 #define BUFFER_SIZE 0x1000
 #define CYRILLIC_CODE_PAGE 1251 
 
@@ -21,11 +27,8 @@ void PrintInfo(IMAGE_SECTION_HEADER* sec_header,
   int sectionIndex,
   DWORD imageBase,
   DWORD entryPoint);
-int GetInfoFromNTHeader(char* headerBufOffset,
-  IMAGE_NT_HEADERS* pe_header,
-  IMAGE_SECTION_HEADER** sec_header,
-  DWORD* imageBase,
-  DWORD* entryPoint);
+int GetInfoFromNTHeader(IMAGE_NT_HEADERS* pe_header, OPT_HEADER_INFO* opt_header_info);
+void FindSectionWithEP(char* buffer, int bufferSize);
 void ParseFile( char* buffer, int bufferSize );
 
 int main( int argc, char** argv )
@@ -94,28 +97,66 @@ unsigned int ReadFileToBuffer( HANDLE fileHandle, char buffer[ BUFFER_SIZE ] )
   return returnValue;
 }
 
-int GetInfoFromNTHeader(char* headerBufOffset,
+int GetInfoFromNTHeader(
     IMAGE_NT_HEADERS* pe_header,
-    IMAGE_SECTION_HEADER** sec_header,
-    DWORD* imageBase,
-    DWORD* entryPoint) {
+    OPT_HEADER_INFO* opt_header_info) {
   if (IMAGE_NT_OPTIONAL_HDR32_MAGIC == pe_header->OptionalHeader.Magic) {
-    IMAGE_NT_HEADERS32* pe_header = (IMAGE_NT_HEADERS32*)headerBufOffset;
-    IMAGE_OPTIONAL_HEADER32* opt_header = &pe_header->OptionalHeader;
-    *sec_header = IMAGE_FIRST_SECTION(pe_header);
-    *imageBase = opt_header->ImageBase;
-    *entryPoint = opt_header->AddressOfEntryPoint;
+    IMAGE_OPTIONAL_HEADER32* opt_header
+      = (IMAGE_OPTIONAL_HEADER32*)&pe_header->OptionalHeader;
+    opt_header_info->sec_header = IMAGE_FIRST_SECTION(pe_header);
+    opt_header_info->imageBase = opt_header->ImageBase;
+    opt_header_info->entryPoint = opt_header->AddressOfEntryPoint;
   } else if (IMAGE_NT_OPTIONAL_HDR64_MAGIC == pe_header->OptionalHeader.Magic) {
-    IMAGE_NT_HEADERS64* pe_header = (IMAGE_NT_HEADERS64*)headerBufOffset;
-    IMAGE_OPTIONAL_HEADER64* opt_header = &pe_header->OptionalHeader;
-    *sec_header = IMAGE_FIRST_SECTION(pe_header);
-    *imageBase = opt_header->ImageBase;
-    *entryPoint = opt_header->AddressOfEntryPoint;
+    IMAGE_OPTIONAL_HEADER64* opt_header
+      = (IMAGE_OPTIONAL_HEADER64*)&pe_header->OptionalHeader;
+    opt_header_info->sec_header = IMAGE_FIRST_SECTION(pe_header);
+    opt_header_info->imageBase = opt_header->ImageBase;
+    opt_header_info->entryPoint = opt_header->AddressOfEntryPoint;
   } else {
     PrintErrorAdv(__func__, NON_EXECUTABLE_IMAGE);
     return -1;
   }
   return 0;
+}
+
+void FindSectionWithEP(char* buffer, int bufferSize) {
+  IMAGE_DOS_HEADER* dos_header = (IMAGE_DOS_HEADER*)buffer;
+  IMAGE_NT_HEADERS* pe_header
+    = (IMAGE_NT_HEADERS*)(buffer + dos_header->e_lfanew);
+  IMAGE_FILE_HEADER* file_header = &pe_header->FileHeader;
+  WORD numberOfSections = file_header->NumberOfSections;
+  OPT_HEADER_INFO opt_header_info;
+  if (NO_ERROR == GetInfoFromNTHeader(pe_header, &opt_header_info)) {
+    DWORD sectionsOffset = dos_header->e_lfanew
+      + FIELD_OFFSET(IMAGE_NT_HEADERS, OptionalHeader)
+      + file_header->SizeOfOptionalHeader;
+    IMAGE_SECTION_HEADER* sec_header = opt_header_info.sec_header;
+    DWORD imageBase = opt_header_info.imageBase;
+    DWORD entryPoint = opt_header_info.entryPoint;
+    if (sectionsOffset + sizeof(*sec_header) * numberOfSections <= bufferSize) {
+      WORD i;
+      int success = 0;
+      for (i = 0; i < numberOfSections; ++i, ++sec_header) {
+        if (sec_header->VirtualAddress <= entryPoint
+          && entryPoint < sec_header->VirtualAddress
+          + sec_header->Misc.VirtualSize) {
+          if (sec_header->SizeOfRawData > 0) {
+            PrintInfo(sec_header, i, imageBase, entryPoint);
+            success = 1;
+          } else {
+            PrintErrorAdv(__func__, UNUSUAL_ENTRY_POINT_LOCATION);
+          }
+          break;
+        }
+      }
+      if (!success) {
+        PrintErrorAdv(__func__, INVALID_ENTRY_POINT);
+      }
+    } else {
+      PrintErrorAdv(__func__, BUFFER_OVERFLOW);
+    }
+  }
+  return;
 }
 
 void ParseFile( char* buffer, int bufferSize )
@@ -139,56 +180,26 @@ void ParseFile( char* buffer, int bufferSize )
   //
   // Ќе забывайте провер€ть такие пол€ как сигнатуры файлов (ведь надо убедитьс€, что разбираем собственно исполн€емый файл)
   //printf( "Buffer length: %d\nImplement parsing of file\n", bufferSize );
-  IMAGE_DOS_HEADER* dos_header = (IMAGE_DOS_HEADER*)buffer;
-  if (IMAGE_DOS_SIGNATURE == dos_header->e_magic) {
-    IMAGE_NT_HEADERS* pe_header = NULL;
-    if (dos_header->e_lfanew + sizeof(*pe_header) <= bufferSize) {
-      pe_header = (IMAGE_NT_HEADERS*)(buffer + dos_header->e_lfanew);
-      if (IMAGE_NT_SIGNATURE == pe_header->Signature) {
-        IMAGE_FILE_HEADER* file_header = &pe_header->FileHeader;
-        WORD numberOfSections = file_header->NumberOfSections;
-        IMAGE_SECTION_HEADER* sec_header = NULL;
-        DWORD imageBase, entryPoint;
-        if (NO_ERROR == GetInfoFromNTHeader(buffer + dos_header->e_lfanew,
-          pe_header,
-          &sec_header,
-          &imageBase,
-          &entryPoint)) {
-          DWORD sectionsOffset = dos_header->e_lfanew
-            + FIELD_OFFSET(IMAGE_NT_HEADERS, OptionalHeader)
-            + file_header->SizeOfOptionalHeader;
-          if (sectionsOffset + sizeof(*sec_header) * numberOfSections
-            <= bufferSize) {
-            WORD i;
-            int success = 0;
-            for (i = 0; i < numberOfSections; ++i, ++sec_header) {
-              if (sec_header->VirtualAddress <= entryPoint
-                && entryPoint < sec_header->VirtualAddress
-                + sec_header->Misc.VirtualSize) {
-                if (sec_header->SizeOfRawData > 0) {
-                  PrintInfo(sec_header, i, imageBase, entryPoint);
-                  success = 1;
-                } else {
-                  PrintErrorAdv(__func__, UNUSUAL_ENTRY_POINT_LOCATION);
-                }
-                break;
-              }
-            }
-            if (!success) {
-              PrintErrorAdv(__func__, INVALID_ENTRY_POINT);
-            }
-          } else {
-            PrintErrorAdv(__func__, BUFFER_OVERFLOW);
-          }
+  IMAGE_DOS_HEADER* dos_header = NULL;
+  if (sizeof(*dos_header) <= bufferSize) {
+    dos_header = (IMAGE_DOS_HEADER*)buffer;
+    if (IMAGE_DOS_SIGNATURE == dos_header->e_magic) {
+      IMAGE_NT_HEADERS* pe_header = NULL;
+      if ((DWORD)dos_header->e_lfanew + sizeof(*pe_header) <= bufferSize) {
+        pe_header = (IMAGE_NT_HEADERS*)(buffer + dos_header->e_lfanew);
+        if (IMAGE_NT_SIGNATURE == pe_header->Signature) {
+          FindSectionWithEP(buffer, bufferSize);
+        } else {
+          PrintErrorAdv(__func__, NT_SIGNATURE_NOT_FOUND);
         }
       } else {
-        PrintErrorAdv(__func__, NT_SIGNATURE_NOT_FOUND);
+        PrintErrorAdv(__func__, INVALID_DOS_HEADER);
       }
     } else {
-      PrintErrorAdv(__func__, INVALID_DOS_HEADER);
+      PrintErrorAdv(__func__, DOS_SIGNATURE_NOT_FOUND);
     }
   } else {
-    PrintErrorAdv(__func__, DOS_SIGNATURE_NOT_FOUND);
+    PrintErrorAdv(__func__, INVALID_DOS_HEADER);
   }
   return;
 }
