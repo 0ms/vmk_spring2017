@@ -223,10 +223,12 @@ int TryPadding(char** buffer,
         sec_header->SizeOfRawData += extra;
         file_info->pe_header->OptionalHeader.AddressOfEntryPoint
           = sec_header->VirtualAddress + virtualSize;
-        ++sec_header;
+        sec_header = file_info->sec_header;
         WORD i;
-        for (i = sectionIndex + 1; i < numberOfSections; ++i, ++sec_header) {
-          sec_header->PointerToRawData += extra;
+        for (i = 0; i < numberOfSections; ++i, ++sec_header) {
+          if (sec_header->PointerToRawData >= rawStart + rawSize) {
+            sec_header->PointerToRawData += extra;
+          }
         }
         *buffer = newBuffer;
         *bufferSize += extra;
