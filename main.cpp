@@ -7,6 +7,29 @@ int main( int argc, char** argv )
   SetConsoleOutputCP( CYRILLIC_CODE_PAGE ); // set code page to display russian symbols
   setlocale( LC_ALL, "Russian" );
 
+  MODE mode;
+  if (0x02 < argc) {
+    switch (atoi(argv[0x02])) {
+      case 1:
+        mode = CAVERN;
+        break;
+      case 2:
+        mode = PADDING;
+        break;
+      case 3:
+        mode = EXTRA;
+        break;
+      default:
+        mode = EXTRA;
+        break;
+    }
+  } else if (0x02 == argc) {
+    mode = EXTRA;
+  } else {
+    PrintHelp(argv[0x00]);
+    return 0x00;
+  }
+  
   HANDLE fileHandle = GetFileFromArguments( argc, argv );
   if( NULL != fileHandle )
   {
@@ -21,7 +44,7 @@ int main( int argc, char** argv )
       }
       else
       {
-        ChangeEntryPoint( buffer, fileSize, argv[ 0x01 ] );
+        ChangeEntryPoint( buffer, fileSize, argv[ 0x01 ], mode);
       }
       free( buffer );
     }

@@ -4,7 +4,7 @@
 HANDLE GetFileFromArguments( int argc, char** argv )
 {
   HANDLE fileHandle = NULL;
-  if( 0x02 == argc )
+  if( 0x02 <= argc )
   {
     fileHandle = CreateFileA( argv[ 0x01 ], GENERIC_READ, NULL, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
     if( INVALID_HANDLE_VALUE == fileHandle )
