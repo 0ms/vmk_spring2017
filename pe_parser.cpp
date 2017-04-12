@@ -265,9 +265,10 @@ int TryExtra(char** buffer,
     }
   }
   sec_header = file_info->sec_header;
-  size_t sectionsOffset = ((BYTE*)sec_header - (BYTE*)*buffer) * sizeof(BYTE);
-  if (sectionsOffset + (numberOfSections + 1) * sizeof(*sec_header)
-    <= minRawStart) {
+  DWORD sectionsBegin = ((BYTE*)sec_header - (BYTE*)*buffer) * sizeof(BYTE);
+  DWORD sectionsEnd
+    = sectionsBegin + (numberOfSections + 1) * sizeof(*sec_header);
+  if (sectionsEnd <= minRawStart) {
     IMAGE_SECTION_HEADER sec_header;
     sec_header.Characteristics
       = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE;
@@ -287,10 +288,34 @@ int TryExtra(char** buffer,
     if (NULL != newBuffer) {
       memcpy(newBuffer, *buffer, *bufferSize);
       if (NO_ERROR == IsValidPEFile(newBuffer, *bufferSize, file_info)) {
+        IMAGE_DATA_DIRECTORY* data_dir = NULL;
+        switch (file_info->arch_type) {
+          case W32:
+            data_dir = &((IMAGE_NT_HEADERS32*)file_info->pe_header)
+              ->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT];
+            break;
+          case W64:
+            data_dir = &((IMAGE_NT_HEADERS64*)file_info->pe_header)
+              ->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT];
+            break;
+          default:
+            break;
+        }
+        if (0 < data_dir->VirtualAddress && 0 < data_dir->Size
+          && data_dir->VirtualAddress < sectionsEnd
+          && sectionsEnd + data_dir->Size <= minRawStart) {
+          memmove(&newBuffer[sectionsEnd],
+            &newBuffer[data_dir->VirtualAddress],
+            data_dir->Size);
+          data_dir->VirtualAddress += sizeof(sec_header);
+        } else {
+          data_dir->VirtualAddress = 0;
+          data_dir->Size = 0;
+        }
         memcpy(&newBuffer[sec_header.PointerToRawData],
           code.code,
           code.sizeOfCode);
-        memcpy(&newBuffer[sectionsOffset + numberOfSections * sizeof(sec_header)],
+        memcpy(&newBuffer[sectionsBegin + numberOfSections * sizeof(sec_header)],
           &sec_header, sizeof(sec_header));
         file_info->pe_header->OptionalHeader.AddressOfEntryPoint
           = file_info->pe_header->OptionalHeader.SizeOfImage;
