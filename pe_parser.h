@@ -65,30 +65,23 @@ int GetInfoFromNTHeader(PE_FILE_INFO* file_info);
 int IsValidPEFile(char* buffer, DWORD bufferSize, PE_FILE_INFO* file_info);
 int DumpEPOFile(char* originalFilename, char* buffer, DWORD bufferSize);
 DWORD alignUp(DWORD alignment, DWORD pointer);
+int SectionHasRequiredPermissions(IMAGE_SECTION_HEADER* sec_header);
+int SectionIsExtendable(DWORD virtualSize,
+  DWORD rawSize,
+  DWORD extra,
+  DWORD sectionAlignment);
+int BoundImportIsPresented(DWORD left,
+  DWORD right,
+  IMAGE_DATA_DIRECTORY* data_dir);
 
 // return NO_ERROR, newly allocated buffer, new bufferSize, new file_info,
-// otherwise returns !NO_ERROR and ensures no memory leaks; code must be freed by caller
-int TryCavern(char** buffer,
-  DWORD* bufferSize,
-  WORD sectionIndex,
-  PE_FILE_INFO* file_info,
-  ENTRY_POINT_CODE code);
-int TryPadding(char** buffer,
-  DWORD* bufferSize,
-  WORD sectionIndex,
-  PE_FILE_INFO* file_info,
-  ENTRY_POINT_CODE code);
-int TryExtra(char** buffer,
-  DWORD* bufferSize,
-  WORD sectionIndex,
-  PE_FILE_INFO* file_info,
-  ENTRY_POINT_CODE code);
+// otherwise returns !NO_ERROR and ensures no memory leaks; buffer must be freed by caller
+int TryCavern(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info);
+int TryPadding(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info);
+int TryExtra(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info);
 
 void PrintErrorAdv(const char* functionFrom, const char* error);
-void PrintInfo(IMAGE_SECTION_HEADER* sec_header,
-  int sectionIndex,
-  ULONGLONG imageBase,
-  DWORD entryPoint);
+void PrintInfo(PE_FILE_INFO* file_info);
 void PrintError( char* functionFrom );
 void PrintHelp( char* programName );
 #pragma endregion
