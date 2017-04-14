@@ -38,7 +38,7 @@ struct ENTRY_POINT_CODE
 };
 
 typedef enum { UNDEF, W32, W64 } ARCH_TYPE;
-typedef enum { CAVERN, PADDING, EXTRA } MODE;
+typedef enum { CAVERN, PADDING, EXTRA, RANDOM } MODE;
 
 struct PE_FILE_INFO {
   ARCH_TYPE arch_type;
@@ -76,9 +76,10 @@ int BoundImportIsPresented(DWORD left,
 
 // return NO_ERROR, newly allocated buffer, new bufferSize, new file_info,
 // otherwise returns !NO_ERROR and ensures no memory leaks; buffer must be freed by caller
-int TryCavern(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info);
-int TryPadding(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info);
-int TryExtra(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info);
+int TryCavern(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info, ENTRY_POINT_CODE code);
+int TryPadding(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info, ENTRY_POINT_CODE code);
+int TryExtra(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info, ENTRY_POINT_CODE code);
+int TryRandom(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info, ENTRY_POINT_CODE code);
 
 void PrintErrorAdv(const char* functionFrom, const char* error);
 void PrintInfo(PE_FILE_INFO* file_info);

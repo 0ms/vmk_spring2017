@@ -140,47 +140,53 @@ DWORD alignUp(DWORD alignment, DWORD pointer) {
   return alignment * (pointer / alignment + 1);
 }
 
-int TryCavern(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info) {
+DWORD getRandomPosition(DWORD range, DWORD size) {
+  return rand() % (range - size + 1);
+}
+
+int TryCavern(char** buffer,
+    DWORD* bufferSize,
+    PE_FILE_INFO* file_info,
+    ENTRY_POINT_CODE code) {
   int result = !NO_ERROR;
   IMAGE_SECTION_HEADER* sec_header = file_info->sec_header;
   WORD numberOfSections
     = file_info->pe_header->FileHeader.NumberOfSections;
   WORD i;
   for (i = 0; i < numberOfSections; ++i, ++sec_header) {
-    ENTRY_POINT_CODE code = GetEntryPointCodeSmall(
-      sec_header->VirtualAddress + sec_header->Misc.VirtualSize,
-      file_info->entryPoint,
-      file_info->arch_type);
-    if (NULL != code.code) {
-      DWORD rawSize = sec_header->SizeOfRawData;
-      DWORD virtualSize = sec_header->Misc.VirtualSize;
-      if (rawSize > virtualSize && virtualSize + code.sizeOfCode < rawSize
-        && true == SectionHasRequiredPermissions(sec_header)) {
-        char* newBuffer = (char*)malloc(*bufferSize * sizeof(*newBuffer));
-        if (NULL != newBuffer) {
-          memcpy(newBuffer, *buffer, *bufferSize);
-          if (NO_ERROR == IsValidPEFile(newBuffer, *bufferSize, file_info)) {
-            sec_header = file_info->sec_header;
-            memcpy(&newBuffer[sec_header->PointerToRawData + virtualSize],
-              code.code,
-              code.sizeOfCode);
-            sec_header->Misc.VirtualSize += code.sizeOfCode;
-            file_info->pe_header->OptionalHeader.AddressOfEntryPoint
-              = sec_header->VirtualAddress + virtualSize;
-            *buffer = newBuffer;
-            free(code.code);
-            result = NO_ERROR;
-            break;
-          } else {
-            free(newBuffer);
-          }
+    DWORD rawSize = sec_header->SizeOfRawData;
+    DWORD virtualSize = sec_header->Misc.VirtualSize;
+    if (rawSize > virtualSize && virtualSize + code.sizeOfCode < rawSize
+      && true == SectionHasRequiredPermissions(sec_header)) {
+      char* newBuffer = (char*)malloc(*bufferSize * sizeof(*newBuffer));
+      if (NULL != newBuffer) {
+        memcpy(newBuffer, *buffer, *bufferSize);
+        if (NO_ERROR == IsValidPEFile(newBuffer, *bufferSize, file_info)) {
+          sec_header = file_info->sec_header;
+          DWORD offset
+            = getRandomPosition(rawSize - virtualSize, code.sizeOfCode);
+          DWORD* pattern
+            = GetPositionOfPattern(code.code, code.sizeOfCode, OFFSET_PATTERN);
+          *pattern = file_info->entryPoint - SIZE_OF_CALL_INSTRUCTION
+            - (sec_header->VirtualAddress + virtualSize + offset);
+          memcpy(
+            &newBuffer[sec_header->PointerToRawData + virtualSize + offset],
+            code.code,
+            code.sizeOfCode);
+          sec_header->Misc.VirtualSize += code.sizeOfCode + offset;
+          file_info->entryPoint
+            = sec_header->VirtualAddress + virtualSize + offset;
+          file_info->pe_header->OptionalHeader.AddressOfEntryPoint
+            = file_info->entryPoint;
+          *buffer = newBuffer;
+          result = NO_ERROR;
+          break;
         } else {
-          PrintErrorAdv(__func__, ALLOCATION_FAILED);
+          free(newBuffer);
         }
+      } else {
+        PrintErrorAdv(__func__, ALLOCATION_FAILED);
       }
-      free(code.code);
-    } else {
-      PrintErrorAdv(__func__, EP_CODE_GENERATION_FAILED);
     }
   }
   return result;
@@ -194,7 +200,10 @@ int SectionIsExtendable(DWORD virtualSize,
     && (virtualSize + extra) / sectionAlignment == virtualSize / sectionAlignment;
 }
 
-int TryPadding(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info) {
+int TryPadding(char** buffer,
+    DWORD* bufferSize,
+    PE_FILE_INFO* file_info,
+    ENTRY_POINT_CODE code) {
   int result = !NO_ERROR;
   IMAGE_SECTION_HEADER* sec_header = file_info->sec_header;
   WORD numberOfSections
@@ -203,54 +212,52 @@ int TryPadding(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info) {
   DWORD sectionAlignment = file_info->pe_header->OptionalHeader.SectionAlignment;
   WORD i;
   for (i = 0; i < numberOfSections; ++i, ++sec_header) {
-    ENTRY_POINT_CODE code = GetEntryPointCodeSmall(
-      sec_header->VirtualAddress + sec_header->Misc.VirtualSize,
-      file_info->entryPoint,
-      file_info->arch_type);
-    if (NULL != code.code) {
-      DWORD rawSize = sec_header->SizeOfRawData;
-      DWORD virtualSize = sec_header->Misc.VirtualSize;
-      DWORD rawStart = sec_header->PointerToRawData;
-      if (true == SectionIsExtendable(virtualSize, rawSize, code.sizeOfCode, sectionAlignment)
-        && true == SectionHasRequiredPermissions(sec_header)) {
-        char* newBuffer
-          = (char*)malloc((*bufferSize + fileAlignment) * sizeof(*newBuffer));
-        if (NULL != newBuffer) {
-          memcpy(newBuffer, *buffer, *bufferSize);
-          if (NO_ERROR == IsValidPEFile(newBuffer, *bufferSize, file_info)) {
-            sec_header = file_info->sec_header;
-            DWORD rawEnd = rawStart + rawSize;
-            DWORD extra = alignUp(fileAlignment, code.sizeOfCode);
-            memmove(&newBuffer[rawEnd + extra],
-              &newBuffer[rawEnd],
-              *bufferSize - rawEnd);
-            memcpy(&newBuffer[rawStart + virtualSize], code.code, code.sizeOfCode);
-            sec_header->Misc.VirtualSize += code.sizeOfCode;
-            sec_header->SizeOfRawData += extra;
-            file_info->pe_header->OptionalHeader.AddressOfEntryPoint
-              = sec_header->VirtualAddress + virtualSize;
-            sec_header = file_info->sec_header;
-            WORD i;
-            for (i = 0; i < numberOfSections; ++i, ++sec_header) {
-              if (sec_header->PointerToRawData >= rawStart + rawSize) {
-                sec_header->PointerToRawData += extra;
-              }
+    DWORD rawSize = sec_header->SizeOfRawData;
+    DWORD virtualSize = sec_header->Misc.VirtualSize;
+    DWORD rawStart = sec_header->PointerToRawData;
+    if (true == SectionIsExtendable(virtualSize, rawSize, code.sizeOfCode, sectionAlignment)
+      && true == SectionHasRequiredPermissions(sec_header)) {
+      DWORD extra = alignUp(fileAlignment, code.sizeOfCode);
+      char* newBuffer
+        = (char*)malloc((*bufferSize + extra) * sizeof(*newBuffer));
+      if (NULL != newBuffer) {
+        memcpy(newBuffer, *buffer, *bufferSize);
+        if (NO_ERROR == IsValidPEFile(newBuffer, *bufferSize, file_info)) {
+          sec_header = file_info->sec_header;
+          DWORD rawEnd = rawStart + rawSize;
+          memmove(&newBuffer[rawEnd + extra],
+            &newBuffer[rawEnd],
+            *bufferSize - rawEnd);
+          DWORD offset
+            = getRandomPosition(extra, code.sizeOfCode);
+          DWORD* pattern
+            = GetPositionOfPattern(code.code, code.sizeOfCode, OFFSET_PATTERN);
+          *pattern = file_info->entryPoint - SIZE_OF_CALL_INSTRUCTION
+            - (sec_header->VirtualAddress + virtualSize + offset);
+          memcpy(&newBuffer[rawStart + virtualSize + offset], code.code, code.sizeOfCode);
+          sec_header->Misc.VirtualSize += code.sizeOfCode + offset;
+          sec_header->SizeOfRawData += extra;
+          file_info->entryPoint
+            = sec_header->VirtualAddress + virtualSize + offset;
+          file_info->pe_header->OptionalHeader.AddressOfEntryPoint
+            = file_info->entryPoint;
+          sec_header = file_info->sec_header;
+          WORD i;
+          for (i = 0; i < numberOfSections; ++i, ++sec_header) {
+            if (sec_header->PointerToRawData >= rawStart + rawSize) {
+              sec_header->PointerToRawData += extra;
             }
-            *buffer = newBuffer;
-            *bufferSize += extra;
-            free(code.code);
-            result = NO_ERROR;
-            break;
-          } else {
-            free(newBuffer);
           }
+          *buffer = newBuffer;
+          *bufferSize += extra;
+          result = NO_ERROR;
+          break;
         } else {
-          PrintErrorAdv(__func__, ALLOCATION_FAILED);
+          free(newBuffer);
         }
+      } else {
+        PrintErrorAdv(__func__, ALLOCATION_FAILED);
       }
-      free(code.code);
-    } else {
-      PrintErrorAdv(__func__, EP_CODE_GENERATION_FAILED);
     }
   }
   return result;
@@ -264,102 +271,135 @@ int BoundImportIsPresented(DWORD left,
     && left + data_dir->Size <= right;
 }
 
-int TryExtra(char** buffer, DWORD* bufferSize, PE_FILE_INFO* file_info) {
+int TryExtra(char** buffer,
+  DWORD* bufferSize,
+  PE_FILE_INFO* file_info,
+  ENTRY_POINT_CODE code) {
   int result = !NO_ERROR;
-  ENTRY_POINT_CODE code = GetEntryPointCodeSmall(
-    file_info->pe_header->OptionalHeader.SizeOfImage,
-    file_info->entryPoint,
-    file_info->arch_type);
-  if (NULL != code.code) {
-    IMAGE_SECTION_HEADER* sec_header = file_info->sec_header;
-    WORD numberOfSections
-      = file_info->pe_header->FileHeader.NumberOfSections;
-    DWORD fileAlignment
-      = file_info->pe_header->OptionalHeader.FileAlignment;
-    DWORD sectionAlignment
-      = file_info->pe_header->OptionalHeader.SectionAlignment;
-    DWORD minRawStart = sec_header->PointerToRawData;
-    DWORD maxRawStart = minRawStart;
-    IMAGE_SECTION_HEADER* last_sec_header = sec_header;
-    WORD i;
-    for (i = 0; i < numberOfSections; ++i, ++sec_header) {
-      minRawStart = min(minRawStart, sec_header->PointerToRawData);
-      if (sec_header->PointerToRawData > maxRawStart) {
-        maxRawStart = sec_header->PointerToRawData;
-        last_sec_header = sec_header;
-      }
+  IMAGE_SECTION_HEADER* sec_header = file_info->sec_header;
+  WORD numberOfSections
+    = file_info->pe_header->FileHeader.NumberOfSections;
+  DWORD fileAlignment
+    = file_info->pe_header->OptionalHeader.FileAlignment;
+  DWORD sectionAlignment
+    = file_info->pe_header->OptionalHeader.SectionAlignment;
+  DWORD minRawStart = sec_header->PointerToRawData;
+  DWORD maxRawStart = minRawStart;
+  IMAGE_SECTION_HEADER* last_sec_header = sec_header;
+  WORD i;
+  for (i = 0; i < numberOfSections; ++i, ++sec_header) {
+    minRawStart = min(minRawStart, sec_header->PointerToRawData);
+    if (sec_header->PointerToRawData > maxRawStart) {
+      maxRawStart = sec_header->PointerToRawData;
+      last_sec_header = sec_header;
     }
-    sec_header = file_info->sec_header;
-    DWORD sectionsBegin = ((BYTE*)sec_header - (BYTE*)*buffer) * sizeof(BYTE);
-    DWORD sectionsEnd
-      = sectionsBegin + (numberOfSections + 1) * sizeof(*sec_header);
-    if (sectionsEnd <= minRawStart) {
-      IMAGE_SECTION_HEADER sec_header;
-      sec_header.Characteristics
-        = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE;
-      sec_header.Misc.VirtualSize = code.sizeOfCode;
-      const char name[] = ".epos";
-      memcpy(sec_header.Name, name, sizeof(name));
-      sec_header.NumberOfLinenumbers = 0;
-      sec_header.NumberOfRelocations = 0;
-      sec_header.PointerToLinenumbers = 0;
-      sec_header.PointerToRawData
-        = last_sec_header->PointerToRawData + last_sec_header->SizeOfRawData;
-      sec_header.PointerToRelocations = 0;
-      sec_header.SizeOfRawData = alignUp(fileAlignment, code.sizeOfCode);
-      sec_header.VirtualAddress
-        = file_info->pe_header->OptionalHeader.SizeOfImage;
-      char* newBuffer = (char*)malloc((*bufferSize + sec_header.SizeOfRawData)
-        * sizeof(*newBuffer));
-      if (NULL != newBuffer) {
-        memcpy(newBuffer, *buffer, *bufferSize);
-        if (NO_ERROR == IsValidPEFile(newBuffer, *bufferSize, file_info)) {
-          IMAGE_DATA_DIRECTORY* data_dir = NULL;
-          switch (file_info->arch_type) {
-            case W32:
-              data_dir = &((IMAGE_NT_HEADERS32*)file_info->pe_header)
-                ->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT];
-              break;
-            case W64:
-              data_dir = &((IMAGE_NT_HEADERS64*)file_info->pe_header)
-                ->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT];
-              break;
-            default:
-              break;
-          }
-          if (true == BoundImportIsPresented(sectionsEnd, minRawStart, data_dir)) {
-            memmove(&newBuffer[sectionsEnd],
-              &newBuffer[data_dir->VirtualAddress],
-              data_dir->Size);
-            data_dir->VirtualAddress += sizeof(sec_header);
-          } else {
-            data_dir->VirtualAddress = 0;
-            data_dir->Size = 0;
-          }
-          memcpy(&newBuffer[sec_header.PointerToRawData],
-            code.code,
-            code.sizeOfCode);
-          memcpy(
-            &newBuffer[sectionsBegin + numberOfSections * sizeof(sec_header)],
-            &sec_header, sizeof(sec_header));
-          file_info->pe_header->OptionalHeader.AddressOfEntryPoint
-            = file_info->pe_header->OptionalHeader.SizeOfImage;
-          file_info->pe_header->OptionalHeader.SizeOfImage
-            += alignUp(sectionAlignment, code.sizeOfCode);
-          ++file_info->pe_header->FileHeader.NumberOfSections;
-          *buffer = newBuffer;
-          *bufferSize += sec_header.SizeOfRawData;
-          result = NO_ERROR;
-        } else {
-          free(newBuffer);
+  }
+  sec_header = file_info->sec_header;
+  DWORD sectionsBegin = ((BYTE*)sec_header - (BYTE*)*buffer) * sizeof(BYTE);
+  DWORD sectionsEnd
+    = sectionsBegin + (numberOfSections + 1) * sizeof(*sec_header);
+  if (sectionsEnd <= minRawStart) {
+    IMAGE_SECTION_HEADER sec_header;
+    sec_header.Characteristics
+      = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE;
+    sec_header.Misc.VirtualSize = code.sizeOfCode;
+    const char name[] = ".epos";
+    memcpy(sec_header.Name, name, sizeof(name));
+    sec_header.NumberOfLinenumbers = 0;
+    sec_header.NumberOfRelocations = 0;
+    sec_header.PointerToLinenumbers = 0;
+    sec_header.PointerToRawData
+      = last_sec_header->PointerToRawData + last_sec_header->SizeOfRawData;
+    sec_header.PointerToRelocations = 0;
+    sec_header.SizeOfRawData = alignUp(fileAlignment, code.sizeOfCode);
+    sec_header.VirtualAddress
+      = file_info->pe_header->OptionalHeader.SizeOfImage;
+    char* newBuffer = (char*)malloc((*bufferSize + sec_header.SizeOfRawData)
+      * sizeof(*newBuffer));
+    if (NULL != newBuffer) {
+      memcpy(newBuffer, *buffer, *bufferSize);
+      if (NO_ERROR == IsValidPEFile(newBuffer, *bufferSize, file_info)) {
+        IMAGE_DATA_DIRECTORY* data_dir = NULL;
+        switch (file_info->arch_type) {
+          case W32:
+            data_dir = &((IMAGE_NT_HEADERS32*)file_info->pe_header)
+              ->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT];
+            break;
+          case W64:
+            data_dir = &((IMAGE_NT_HEADERS64*)file_info->pe_header)
+              ->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT];
+            break;
+          default:
+            break;
         }
+        if (true == BoundImportIsPresented(sectionsEnd, minRawStart, data_dir)) {
+          memmove(&newBuffer[sectionsEnd],
+            &newBuffer[data_dir->VirtualAddress],
+            data_dir->Size);
+          data_dir->VirtualAddress += sizeof(sec_header);
+        } else {
+          data_dir->VirtualAddress = 0;
+          data_dir->Size = 0;
+        }
+        DWORD offset
+          = getRandomPosition(sec_header.SizeOfRawData, code.sizeOfCode);
+        DWORD* pattern
+          = GetPositionOfPattern(code.code, code.sizeOfCode, OFFSET_PATTERN);
+        *pattern = file_info->entryPoint - SIZE_OF_CALL_INSTRUCTION
+          - (sec_header.VirtualAddress + offset);
+        sec_header.Misc.VirtualSize += offset;
+        memcpy(&newBuffer[sec_header.PointerToRawData + offset],
+          code.code,
+          code.sizeOfCode);
+        memcpy(
+          &newBuffer[sectionsBegin + numberOfSections * sizeof(sec_header)],
+          &sec_header, sizeof(sec_header));
+        file_info->entryPoint
+          = file_info->pe_header->OptionalHeader.SizeOfImage + offset;
+        file_info->pe_header->OptionalHeader.AddressOfEntryPoint
+          = file_info->entryPoint;
+        file_info->pe_header->OptionalHeader.SizeOfImage
+          += alignUp(sectionAlignment, code.sizeOfCode);
+        ++file_info->pe_header->FileHeader.NumberOfSections;
+        *buffer = newBuffer;
+        *bufferSize += sec_header.SizeOfRawData;
+        result = NO_ERROR;
       } else {
-        PrintErrorAdv(__func__, ALLOCATION_FAILED);
+        free(newBuffer);
+      }
+    } else {
+      PrintErrorAdv(__func__, ALLOCATION_FAILED);
+    }
+  }
+  return result;
+}
+
+int TryRandom(char** buffer,
+    DWORD* bufferSize,
+    PE_FILE_INFO* file_info,
+    ENTRY_POINT_CODE code) {
+  int result = !NO_ERROR;
+  int modeIndex = rand() % 3;
+  int i;
+  for (i = 0; i < 3 && NO_ERROR != result; ++i) {
+    switch (modeIndex) {
+      case CAVERN: {
+        result = TryCavern(buffer, bufferSize, file_info, code);
+        break;
+      }
+      case PADDING: {
+        result = TryPadding(buffer, bufferSize, file_info, code);
+        break;
+      }
+      case EXTRA: {
+        result = TryExtra(buffer, bufferSize, file_info, code);
+        break;
+      }
+      default: {
+        break;
       }
     }
-    free(code.code);
-  } else {
-    PrintErrorAdv(__func__, EP_CODE_GENERATION_FAILED);
+    modeIndex = (modeIndex + 1) % 3;
   }
   return result;
 }
@@ -392,23 +432,36 @@ void ChangeEntryPoint( char* buffer, DWORD bufferSize, char* originalFilename, M
   int result = !NO_ERROR;
   if (NO_ERROR == IsValidPEFile(buffer, bufferSize, &file_info)) {
     PrintInfo(&file_info);
-    switch (mode) {
-      case CAVERN: {
-        result = TryCavern(&buffer, &bufferSize, &file_info);
-        break;
+    ENTRY_POINT_CODE code = GetEntryPointCodeSmall(
+      file_info.entryPoint - SIZE_OF_CALL_INSTRUCTION - OFFSET_PATTERN,
+      file_info.entryPoint,
+      file_info.arch_type);
+    if (NULL != code.code) {
+      switch (mode) {
+        case CAVERN: {
+          result = TryCavern(&buffer, &bufferSize, &file_info, code);
+          break;
+        }
+        case PADDING: {
+          result = TryPadding(&buffer, &bufferSize, &file_info, code);
+          break;
+        }
+        case EXTRA: {
+          result = TryExtra(&buffer, &bufferSize, &file_info, code);
+          break;
+        }
+        case RANDOM: {
+          result = TryRandom(&buffer, &bufferSize, &file_info, code);
+          break;
+        }
+        default: {
+          PrintErrorAdv(__func__, "Invalid mode\n");
+          break;
+        }
       }
-      case PADDING: {
-        result = TryPadding(&buffer, &bufferSize, &file_info);
-        break;
-      }
-      case EXTRA: {
-        result = TryExtra(&buffer, &bufferSize, &file_info);
-        break;
-      }
-      default: {
-        PrintErrorAdv(__func__, "Invalid mode\n");
-        break;
-      }
+      free(code.code);
+    } else {
+      PrintErrorAdv(__func__, EP_CODE_GENERATION_FAILED);
     }
   }
   if (NO_ERROR == result) {

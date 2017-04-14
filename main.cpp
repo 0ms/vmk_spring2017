@@ -1,12 +1,13 @@
 ﻿#include "pe_parser.h"
 #include <locale.h>
+#include <time.h>
 
 int main( int argc, char** argv )
 {
   UINT codePage = GetConsoleOutputCP( );
   SetConsoleOutputCP( CYRILLIC_CODE_PAGE ); // set code page to display russian symbols
   setlocale( LC_ALL, "Russian" );
-
+  srand((unsigned int)time(NULL));
   MODE mode;
   if (0x02 < argc) {
     switch (atoi(argv[0x02])) {
@@ -19,12 +20,15 @@ int main( int argc, char** argv )
       case 3:
         mode = EXTRA;
         break;
+      case 4:
+        mode = RANDOM;
+        break;
       default:
-        mode = EXTRA;
+        mode = RANDOM;
         break;
     }
   } else if (0x02 == argc) {
-    mode = EXTRA;
+    mode = RANDOM;
   } else {
     PrintHelp(argv[0x00]);
     return 0x00;

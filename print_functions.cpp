@@ -3,7 +3,7 @@
 #pragma region __ Print functions __
 void PrintHelp( char* programName )
 {
-  printf( "Usage:\n%s <filename> <mode: 1[cavern], 2[padding], 3[extra]>", programName );
+  printf( "Usage:\n%s <filename> <mode: 1[cavern], 2[padding], 3[extra], 4[random]>", programName );
 }
 
 void PrintError( char* functionFrom )
