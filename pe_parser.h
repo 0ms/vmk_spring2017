@@ -9,6 +9,7 @@
 #define MAX_FILE_SIZE_ALLOWED_TO_READ 20 * MEGABYTE
 #define SIZE_OF_CALL_INSTRUCTION 5
 #define OFFSET_PATTERN 0x77777777
+#define MAX_EXTRA_SIZE_COEFF 8
 
 #define CAN_NOT_READ_ENTIRE_FILE "Can not read entire file"
 #define CAN_NOT_WRITE_ENTIRE_FILE "Can not write entire file"
@@ -24,9 +25,12 @@
 #define UNUSUAL_ENTRY_POINT_LOCATION "Unusual entry point location"
 #define ALLOCATION_FAILED "Memory allocation failed"
 #define EP_CODE_GENERATION_FAILED "Failed to generate new EP code"
+#define NO_SPACE_FOR_HEADER "Not enough space for extra header"
 #define EPO_FAILED "EPO failed"
 
 #define RESULT_FILE_SUFFIX "_epo.exe"
+
+static const char* methods[] = { "CAVERN", "PADDING", "EXTRA" };
 #pragma endregion
 
 
@@ -67,10 +71,9 @@ int DumpEPOFile(char* originalFilename, char* buffer, DWORD bufferSize);
 DWORD alignUp(DWORD alignment, DWORD pointer);
 int SectionHasRequiredPermissions(IMAGE_SECTION_HEADER* sec_header);
 int SectionIsExtendable(DWORD virtualSize,
-  DWORD rawSize,
   DWORD extra,
   DWORD sectionAlignment);
-int BoundImportIsPresented(DWORD left,
+int DataDirectoryInRange(DWORD left,
   DWORD right,
   IMAGE_DATA_DIRECTORY* data_dir);
 

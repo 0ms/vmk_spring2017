@@ -193,11 +193,9 @@ int TryCavern(char** buffer,
 }
 
 int SectionIsExtendable(DWORD virtualSize,
-    DWORD rawSize,
     DWORD extra,
     DWORD sectionAlignment) {
-  return virtualSize < rawSize && virtualSize + extra > rawSize
-    && (virtualSize + extra) / sectionAlignment == virtualSize / sectionAlignment;
+  return virtualSize % sectionAlignment + extra <= sectionAlignment;
 }
 
 int TryPadding(char** buffer,
@@ -215,9 +213,11 @@ int TryPadding(char** buffer,
     DWORD rawSize = sec_header->SizeOfRawData;
     DWORD virtualSize = sec_header->Misc.VirtualSize;
     DWORD rawStart = sec_header->PointerToRawData;
-    if (true == SectionIsExtendable(virtualSize, rawSize, code.sizeOfCode, sectionAlignment)
+    if (true == SectionIsExtendable(virtualSize, code.sizeOfCode, sectionAlignment)
       && true == SectionHasRequiredPermissions(sec_header)) {
-      DWORD extra = alignUp(fileAlignment, code.sizeOfCode);
+      DWORD vExtra
+        = alignUp(sectionAlignment, virtualSize) - virtualSize - code.sizeOfCode;
+      DWORD extra = alignUp(fileAlignment, vExtra);
       char* newBuffer
         = (char*)malloc((*bufferSize + extra) * sizeof(*newBuffer));
       if (NULL != newBuffer) {
@@ -228,8 +228,7 @@ int TryPadding(char** buffer,
           memmove(&newBuffer[rawEnd + extra],
             &newBuffer[rawEnd],
             *bufferSize - rawEnd);
-          DWORD offset
-            = getRandomPosition(extra, code.sizeOfCode);
+          DWORD offset = getRandomPosition(vExtra, code.sizeOfCode);
           DWORD* pattern
             = GetPositionOfPattern(code.code, code.sizeOfCode, OFFSET_PATTERN);
           *pattern = file_info->entryPoint - SIZE_OF_CALL_INSTRUCTION
@@ -244,7 +243,7 @@ int TryPadding(char** buffer,
           sec_header = file_info->sec_header;
           WORD i;
           for (i = 0; i < numberOfSections; ++i, ++sec_header) {
-            if (sec_header->PointerToRawData >= rawStart + rawSize) {
+            if (sec_header->PointerToRawData >= rawEnd) {
               sec_header->PointerToRawData += extra;
             }
           }
@@ -263,7 +262,7 @@ int TryPadding(char** buffer,
   return result;
 }
 
-int BoundImportIsPresented(DWORD left,
+int DataDirectoryInRange(DWORD left,
     DWORD right,
     IMAGE_DATA_DIRECTORY* data_dir) {
   return 0 < data_dir->VirtualAddress && 0 < data_dir->Size
@@ -285,10 +284,12 @@ int TryExtra(char** buffer,
     = file_info->pe_header->OptionalHeader.SectionAlignment;
   DWORD minRawStart = sec_header->PointerToRawData;
   DWORD maxRawStart = minRawStart;
+  DWORD minVirtualStart = sec_header->VirtualAddress;
   IMAGE_SECTION_HEADER* last_sec_header = sec_header;
   WORD i;
   for (i = 0; i < numberOfSections; ++i, ++sec_header) {
     minRawStart = min(minRawStart, sec_header->PointerToRawData);
+    minVirtualStart = min(minVirtualStart, sec_header->VirtualAddress);
     if (sec_header->PointerToRawData > maxRawStart) {
       maxRawStart = sec_header->PointerToRawData;
       last_sec_header = sec_header;
@@ -298,7 +299,7 @@ int TryExtra(char** buffer,
   DWORD sectionsBegin = ((BYTE*)sec_header - (BYTE*)*buffer) * sizeof(BYTE);
   DWORD sectionsEnd
     = sectionsBegin + (numberOfSections + 1) * sizeof(*sec_header);
-  if (sectionsEnd <= minRawStart) {
+  if (sectionsEnd <= minVirtualStart) {
     IMAGE_SECTION_HEADER sec_header;
     sec_header.Characteristics
       = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE;
@@ -314,10 +315,21 @@ int TryExtra(char** buffer,
     sec_header.SizeOfRawData = alignUp(fileAlignment, code.sizeOfCode);
     sec_header.VirtualAddress
       = file_info->pe_header->OptionalHeader.SizeOfImage;
-    char* newBuffer = (char*)malloc((*bufferSize + sec_header.SizeOfRawData)
-      * sizeof(*newBuffer));
+    DWORD extra = 0;
+    if (sectionsEnd > minRawStart) {
+      extra = sectionsEnd - minRawStart;
+    }
+    sec_header.PointerToRawData += extra;
+    char* newBuffer = (char*)malloc(
+      (*bufferSize + sec_header.SizeOfRawData + extra) * sizeof(*newBuffer));
     if (NULL != newBuffer) {
       memcpy(newBuffer, *buffer, *bufferSize);
+      if (0 != extra) {
+        memcpy(&newBuffer[sectionsEnd + extra],
+          &newBuffer[sectionsEnd],
+          *bufferSize - sectionsEnd);
+        *bufferSize += extra;
+      }
       if (NO_ERROR == IsValidPEFile(newBuffer, *bufferSize, file_info)) {
         IMAGE_DATA_DIRECTORY* data_dir = NULL;
         switch (file_info->arch_type) {
@@ -332,7 +344,7 @@ int TryExtra(char** buffer,
           default:
             break;
         }
-        if (true == BoundImportIsPresented(sectionsEnd, minRawStart, data_dir)) {
+        if (true == DataDirectoryInRange(sectionsEnd, minRawStart, data_dir)) {
           memmove(&newBuffer[sectionsEnd],
             &newBuffer[data_dir->VirtualAddress],
             data_dir->Size);
@@ -354,6 +366,13 @@ int TryExtra(char** buffer,
         memcpy(
           &newBuffer[sectionsBegin + numberOfSections * sizeof(sec_header)],
           &sec_header, sizeof(sec_header));
+        if (0 != extra) {
+          IMAGE_SECTION_HEADER* sec_header = file_info->sec_header;
+          WORD i;
+          for (i = 0; i < numberOfSections; ++i, ++sec_header) {
+            sec_header->PointerToRawData += extra;
+          }
+        }
         file_info->entryPoint
           = file_info->pe_header->OptionalHeader.SizeOfImage + offset;
         file_info->pe_header->OptionalHeader.AddressOfEntryPoint
@@ -370,6 +389,8 @@ int TryExtra(char** buffer,
     } else {
       PrintErrorAdv(__func__, ALLOCATION_FAILED);
     }
+  } else {
+    PrintErrorAdv(__func__, NO_SPACE_FOR_HEADER);
   }
   return result;
 }
@@ -381,7 +402,7 @@ int TryRandom(char** buffer,
   int result = !NO_ERROR;
   int modeIndex = rand() % 3;
   int i;
-  for (i = 0; i < 3 && NO_ERROR != result; ++i) {
+  for (i = 0; i < 3; ++i) {
     switch (modeIndex) {
       case CAVERN: {
         result = TryCavern(buffer, bufferSize, file_info, code);
@@ -398,6 +419,10 @@ int TryRandom(char** buffer,
       default: {
         break;
       }
+    }
+    if (NO_ERROR == result) {
+      printf("%s: \"%s\" was applied successfully\n", __func__, methods[modeIndex]);
+      break;
     }
     modeIndex = (modeIndex + 1) % 3;
   }
