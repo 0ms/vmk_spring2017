@@ -76,6 +76,11 @@ int SectionIsExtendable(DWORD virtualSize,
 int DataDirectoryInRange(DWORD left,
   DWORD right,
   IMAGE_DATA_DIRECTORY* data_dir);
+void FixSectionRawOffsets(PE_FILE_INFO* file_info, DWORD offset, DWORD size);
+void InitExtraSection(PE_FILE_INFO* file_info,
+  IMAGE_SECTION_HEADER* sec_header,
+  DWORD rawOffset,
+  DWORD codeSize);
 
 // return NO_ERROR, newly allocated buffer, new bufferSize, new file_info,
 // otherwise returns !NO_ERROR and ensures no memory leaks; buffer must be freed by caller

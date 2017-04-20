@@ -198,6 +198,18 @@ int SectionIsExtendable(DWORD virtualSize,
   return virtualSize % sectionAlignment + extra <= sectionAlignment;
 }
 
+void FixSectionRawOffsets(PE_FILE_INFO* file_info, DWORD offset, DWORD size) {
+  IMAGE_SECTION_HEADER* sec_header = file_info->sec_header;
+  WORD i;
+  for (i = 0; i < file_info->pe_header->FileHeader.NumberOfSections;
+    ++i, ++sec_header) {
+    if (sec_header->PointerToRawData >= offset) {
+      sec_header->PointerToRawData += size;
+    }
+  }
+  return;
+}
+
 int TryPadding(char** buffer,
     DWORD* bufferSize,
     PE_FILE_INFO* file_info,
@@ -215,9 +227,11 @@ int TryPadding(char** buffer,
     DWORD rawStart = sec_header->PointerToRawData;
     if (true == SectionIsExtendable(virtualSize, code.sizeOfCode, sectionAlignment)
       && true == SectionHasRequiredPermissions(sec_header)) {
-      DWORD vExtra
-        = alignUp(sectionAlignment, virtualSize) - virtualSize - code.sizeOfCode;
-      DWORD extra = alignUp(fileAlignment, vExtra);
+      DWORD availableRange
+        = alignUp(sectionAlignment, virtualSize) - virtualSize;
+      DWORD offset = getRandomPosition(availableRange, code.sizeOfCode);
+      DWORD extra
+        = alignUp(fileAlignment, offset + code.sizeOfCode - (virtualSize % fileAlignment));
       char* newBuffer
         = (char*)malloc((*bufferSize + extra) * sizeof(*newBuffer));
       if (NULL != newBuffer) {
@@ -228,7 +242,6 @@ int TryPadding(char** buffer,
           memmove(&newBuffer[rawEnd + extra],
             &newBuffer[rawEnd],
             *bufferSize - rawEnd);
-          DWORD offset = getRandomPosition(vExtra, code.sizeOfCode);
           DWORD* pattern
             = GetPositionOfPattern(code.code, code.sizeOfCode, OFFSET_PATTERN);
           *pattern = file_info->entryPoint - SIZE_OF_CALL_INSTRUCTION
@@ -240,13 +253,7 @@ int TryPadding(char** buffer,
             = sec_header->VirtualAddress + virtualSize + offset;
           file_info->pe_header->OptionalHeader.AddressOfEntryPoint
             = file_info->entryPoint;
-          sec_header = file_info->sec_header;
-          WORD i;
-          for (i = 0; i < numberOfSections; ++i, ++sec_header) {
-            if (sec_header->PointerToRawData >= rawEnd) {
-              sec_header->PointerToRawData += extra;
-            }
-          }
+          FixSectionRawOffsets(file_info, rawEnd, extra);
           *buffer = newBuffer;
           *bufferSize += extra;
           result = NO_ERROR;
@@ -268,6 +275,28 @@ int DataDirectoryInRange(DWORD left,
   return 0 < data_dir->VirtualAddress && 0 < data_dir->Size
     && data_dir->VirtualAddress < left
     && left + data_dir->Size <= right;
+}
+
+void InitExtraSection(PE_FILE_INFO* file_info,
+    IMAGE_SECTION_HEADER* sec_header,
+    DWORD rawOffset,
+    DWORD codeSize) {
+  sec_header->Characteristics
+    = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE;
+  sec_header->Misc.VirtualSize = codeSize;
+  const char name[] = ".epos";
+  memcpy(sec_header->Name, name, sizeof(name));
+  sec_header->NumberOfLinenumbers = 0;
+  sec_header->NumberOfRelocations = 0;
+  sec_header->PointerToLinenumbers = 0;
+  sec_header->PointerToRawData
+    = rawOffset;
+  sec_header->PointerToRelocations = 0;
+  sec_header->SizeOfRawData
+    = alignUp(file_info->pe_header->OptionalHeader.FileAlignment, codeSize);
+  sec_header->VirtualAddress
+    = file_info->pe_header->OptionalHeader.SizeOfImage;
+  return;
 }
 
 int TryExtra(char** buffer,
@@ -301,25 +330,24 @@ int TryExtra(char** buffer,
     = sectionsBegin + (numberOfSections + 1) * sizeof(*sec_header);
   if (sectionsEnd <= minVirtualStart) {
     IMAGE_SECTION_HEADER sec_header;
-    sec_header.Characteristics
-      = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE;
-    sec_header.Misc.VirtualSize = code.sizeOfCode;
-    const char name[] = ".epos";
-    memcpy(sec_header.Name, name, sizeof(name));
-    sec_header.NumberOfLinenumbers = 0;
-    sec_header.NumberOfRelocations = 0;
-    sec_header.PointerToLinenumbers = 0;
-    sec_header.PointerToRawData
-      = last_sec_header->PointerToRawData + last_sec_header->SizeOfRawData;
-    sec_header.PointerToRelocations = 0;
-    sec_header.SizeOfRawData = alignUp(fileAlignment, code.sizeOfCode);
-    sec_header.VirtualAddress
-      = file_info->pe_header->OptionalHeader.SizeOfImage;
+    InitExtraSection(file_info,
+      &sec_header,
+      last_sec_header->PointerToRawData + last_sec_header->SizeOfRawData,
+      code.sizeOfCode);
     DWORD extra = 0;
-    if (sectionsEnd > minRawStart) {
-      extra = sectionsEnd - minRawStart;
+    IMAGE_SECTION_HEADER* sec_hdr = file_info->sec_header;
+    DWORD sectionsBorder = sec_hdr->PointerToRawData;
+    int found = !NO_ERROR;
+    for (i = 0; i < numberOfSections; ++i, ++sec_hdr) {
+      if (sectionsBegin < sec_hdr->PointerToRawData
+        && sec_hdr->PointerToRawData < sectionsEnd) {
+        sectionsBorder = min(sectionsBorder, sec_hdr->PointerToRawData);
+        found = NO_ERROR;
+      }
     }
-    sec_header.PointerToRawData += extra;
+    if (NO_ERROR == found) {
+      extra = sectionsEnd - sectionsBorder;
+    }
     char* newBuffer = (char*)malloc(
       (*bufferSize + sec_header.SizeOfRawData + extra) * sizeof(*newBuffer));
     if (NULL != newBuffer) {
@@ -360,18 +388,14 @@ int TryExtra(char** buffer,
         *pattern = file_info->entryPoint - SIZE_OF_CALL_INSTRUCTION
           - (sec_header.VirtualAddress + offset);
         sec_header.Misc.VirtualSize += offset;
-        memcpy(&newBuffer[sec_header.PointerToRawData + offset],
+        memcpy(&newBuffer[sec_header.PointerToRawData + offset + extra],
           code.code,
           code.sizeOfCode);
         memcpy(
           &newBuffer[sectionsBegin + numberOfSections * sizeof(sec_header)],
           &sec_header, sizeof(sec_header));
         if (0 != extra) {
-          IMAGE_SECTION_HEADER* sec_header = file_info->sec_header;
-          WORD i;
-          for (i = 0; i < numberOfSections; ++i, ++sec_header) {
-            sec_header->PointerToRawData += extra;
-          }
+          FixSectionRawOffsets(file_info, sectionsBorder, extra);
         }
         file_info->entryPoint
           = file_info->pe_header->OptionalHeader.SizeOfImage + offset;
