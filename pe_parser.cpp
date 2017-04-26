@@ -195,7 +195,8 @@ int TryCavern(char** buffer,
 int SectionIsExtendable(DWORD virtualSize,
     DWORD extra,
     DWORD sectionAlignment) {
-  return virtualSize % sectionAlignment + extra <= sectionAlignment;
+  return alignUp(sectionAlignment, virtualSize) - virtualSize + extra
+    <= sectionAlignment;
 }
 
 void FixSectionRawOffsets(PE_FILE_INFO* file_info, DWORD offset, DWORD size) {
@@ -230,8 +231,10 @@ int TryPadding(char** buffer,
       DWORD availableRange
         = alignUp(sectionAlignment, virtualSize) - virtualSize;
       DWORD offset = getRandomPosition(availableRange, code.sizeOfCode);
-      DWORD extra
-        = alignUp(fileAlignment, offset + code.sizeOfCode - (virtualSize % fileAlignment));
+      DWORD rawAvailRange
+        = alignUp(fileAlignment, virtualSize) - virtualSize;
+      DWORD extra = offset + code.sizeOfCode <= rawAvailRange ?
+        0 : alignUp(fileAlignment, offset + code.sizeOfCode - rawAvailRange);
       char* newBuffer
         = (char*)malloc((*bufferSize + extra) * sizeof(*newBuffer));
       if (NULL != newBuffer) {
@@ -325,37 +328,27 @@ int TryExtra(char** buffer,
     }
   }
   sec_header = file_info->sec_header;
-  DWORD sectionsBegin = ((BYTE*)sec_header - (BYTE*)*buffer) * sizeof(BYTE);
-  DWORD sectionsEnd
-    = sectionsBegin + (numberOfSections + 1) * sizeof(*sec_header);
-  if (sectionsEnd <= minVirtualStart) {
+  DWORD secHdrsBegin = ((BYTE*)sec_header - (BYTE*)*buffer) * sizeof(BYTE);
+  DWORD secHdrsEnd
+    = secHdrsBegin + (numberOfSections + 1) * sizeof(*sec_header);
+  if (secHdrsEnd <= minVirtualStart) {
     IMAGE_SECTION_HEADER sec_header;
     InitExtraSection(file_info,
       &sec_header,
       last_sec_header->PointerToRawData + last_sec_header->SizeOfRawData,
       code.sizeOfCode);
     DWORD extra = 0;
-    IMAGE_SECTION_HEADER* sec_hdr = file_info->sec_header;
-    DWORD sectionsBorder = sec_hdr->PointerToRawData;
-    int found = !NO_ERROR;
-    for (i = 0; i < numberOfSections; ++i, ++sec_hdr) {
-      if (sectionsBegin < sec_hdr->PointerToRawData
-        && sec_hdr->PointerToRawData < sectionsEnd) {
-        sectionsBorder = min(sectionsBorder, sec_hdr->PointerToRawData);
-        found = NO_ERROR;
-      }
-    }
-    if (NO_ERROR == found) {
-      extra = sectionsEnd - sectionsBorder;
+    if (secHdrsBegin < minRawStart && minRawStart < secHdrsEnd) {
+      extra = secHdrsEnd - minRawStart;
     }
     char* newBuffer = (char*)malloc(
       (*bufferSize + sec_header.SizeOfRawData + extra) * sizeof(*newBuffer));
     if (NULL != newBuffer) {
       memcpy(newBuffer, *buffer, *bufferSize);
       if (0 != extra) {
-        memcpy(&newBuffer[sectionsEnd + extra],
-          &newBuffer[sectionsEnd],
-          *bufferSize - sectionsEnd);
+        memcpy(&newBuffer[secHdrsEnd + extra],
+          &newBuffer[secHdrsEnd],
+          *bufferSize - secHdrsEnd);
         *bufferSize += extra;
       }
       if (NO_ERROR == IsValidPEFile(newBuffer, *bufferSize, file_info)) {
@@ -372,8 +365,8 @@ int TryExtra(char** buffer,
           default:
             break;
         }
-        if (true == DataDirectoryInRange(sectionsEnd, minRawStart, data_dir)) {
-          memmove(&newBuffer[sectionsEnd],
+        if (true == DataDirectoryInRange(secHdrsEnd, minRawStart, data_dir)) {
+          memmove(&newBuffer[secHdrsEnd],
             &newBuffer[data_dir->VirtualAddress],
             data_dir->Size);
           data_dir->VirtualAddress += sizeof(sec_header);
@@ -392,10 +385,10 @@ int TryExtra(char** buffer,
           code.code,
           code.sizeOfCode);
         memcpy(
-          &newBuffer[sectionsBegin + numberOfSections * sizeof(sec_header)],
+          &newBuffer[secHdrsBegin + numberOfSections * sizeof(sec_header)],
           &sec_header, sizeof(sec_header));
         if (0 != extra) {
-          FixSectionRawOffsets(file_info, sectionsBorder, extra);
+          FixSectionRawOffsets(file_info, minRawStart, extra);
         }
         file_info->entryPoint
           = file_info->pe_header->OptionalHeader.SizeOfImage + offset;
