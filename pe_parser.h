@@ -70,7 +70,8 @@ int IsValidPEFile(char* buffer, DWORD bufferSize, PE_FILE_INFO* file_info);
 int DumpEPOFile(char* originalFilename, char* buffer, DWORD bufferSize);
 DWORD alignUp(DWORD alignment, DWORD pointer);
 int SectionHasRequiredPermissions(IMAGE_SECTION_HEADER* sec_header);
-int SectionIsExtendable(DWORD virtualSize,
+int SectionIsExtendable(DWORD rawSize, 
+  DWORD virtualSize,
   DWORD extra,
   DWORD sectionAlignment);
 int DataDirectoryInRange(DWORD left,

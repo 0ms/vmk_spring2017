@@ -192,10 +192,12 @@ int TryCavern(char** buffer,
   return result;
 }
 
-int SectionIsExtendable(DWORD virtualSize,
+int SectionIsExtendable(DWORD rawSize,
+    DWORD virtualSize,
     DWORD extra,
     DWORD sectionAlignment) {
-  return alignUp(sectionAlignment, virtualSize) - virtualSize + extra
+  return rawSize > virtualSize
+    && alignUp(sectionAlignment, virtualSize) - virtualSize + extra
     <= sectionAlignment;
 }
 
@@ -226,13 +228,13 @@ int TryPadding(char** buffer,
     DWORD rawSize = sec_header->SizeOfRawData;
     DWORD virtualSize = sec_header->Misc.VirtualSize;
     DWORD rawStart = sec_header->PointerToRawData;
-    if (true == SectionIsExtendable(virtualSize, code.sizeOfCode, sectionAlignment)
+    if (true == SectionIsExtendable(rawSize, virtualSize, code.sizeOfCode, sectionAlignment)
       && true == SectionHasRequiredPermissions(sec_header)) {
       DWORD availableRange
         = alignUp(sectionAlignment, virtualSize) - virtualSize;
       DWORD offset = getRandomPosition(availableRange, code.sizeOfCode);
       DWORD rawAvailRange
-        = alignUp(fileAlignment, virtualSize) - virtualSize;
+        = rawSize - virtualSize;
       DWORD extra = offset + code.sizeOfCode <= rawAvailRange ?
         0 : alignUp(fileAlignment, offset + code.sizeOfCode - rawAvailRange);
       char* newBuffer
